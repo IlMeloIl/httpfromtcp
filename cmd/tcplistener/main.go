@@ -5,22 +5,22 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
+	"net"
 	"strings"
 )
 
-func getLinesChannel(f io.ReadCloser) <-chan string {
+func getLinesChannel(conn net.Conn) <-chan string {
 	lines := make(chan string)
 
 	go func() {
 		defer close(lines)
-		defer f.Close()
+		defer conn.Close()
 
 		var currentLine string
 
 		for {
 			b := make([]byte, 8)
-			_, err := f.Read(b)
+			n, err := conn.Read(b)
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					if currentLine != "" {
@@ -30,6 +30,10 @@ func getLinesChannel(f io.ReadCloser) <-chan string {
 				}
 				log.Printf("error: %s\n", err.Error())
 				return
+			}
+
+			if n == 0 {
+				continue
 			}
 
 			parts := strings.Split(string(b), "\n")
@@ -45,15 +49,31 @@ func getLinesChannel(f io.ReadCloser) <-chan string {
 	return lines
 }
 
+const Port = "42069"
+
 func main() {
-	f, err := os.Open("messages.txt")
+	ln, err := net.Listen("tcp", ":"+Port)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	lines := getLinesChannel(f)
+	log.Printf("Listening to TCP connections on port %s ...\n", Port)
 
-	for line := range lines {
-		fmt.Printf("read: %s\n", line)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Printf("Could not accept conn: %s\n", err)
+			continue
+		}
+
+		fmt.Println("Connection accepted!")
+
+		lines := getLinesChannel(conn)
+
+		for line := range lines {
+			fmt.Println(line)
+		}
+		fmt.Println("Connection closed")
 	}
+
 }
