@@ -1,53 +1,12 @@
 package main
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"strings"
+
+	r "httpfromtcp/internal/request"
 )
-
-func getLinesChannel(conn net.Conn) <-chan string {
-	lines := make(chan string)
-
-	go func() {
-		defer close(lines)
-		defer conn.Close()
-
-		var currentLine string
-
-		for {
-			b := make([]byte, 8)
-			n, err := conn.Read(b)
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					if currentLine != "" {
-						lines <- currentLine
-					}
-					break
-				}
-				log.Printf("error: %s\n", err.Error())
-				return
-			}
-
-			if n == 0 {
-				continue
-			}
-
-			parts := strings.Split(string(b), "\n")
-
-			for i := 0; i < len(parts)-1; i++ {
-				currentLine += parts[i]
-				lines <- currentLine
-				currentLine = ""
-			}
-			currentLine += parts[len(parts)-1]
-		}
-	}()
-	return lines
-}
 
 const Port = "42069"
 
@@ -68,11 +27,13 @@ func main() {
 
 		fmt.Println("Connection accepted!")
 
-		lines := getLinesChannel(conn)
-
-		for line := range lines {
-			fmt.Println(line)
+		req, err := r.RequestFromReader(conn)
+		if err != nil {
+			log.Fatal(err)
 		}
+
+		fmt.Printf("Request line:\n- Method: %v\n- Target: %v\n- Version: %v\n", req.RequestLine.Method, req.RequestLine.RequestTarget, req.RequestLine.HttpVersion)
+
 		fmt.Println("Connection closed")
 	}
 
