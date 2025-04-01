@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	h "httpfromtcp/internal/headers"
 )
 
 const (
 	StateInitialized = iota
+	StateParsingHeaders
 	StateDone
 )
 
 type Request struct {
 	RequestLine RequestLine
+	Headers     h.Headers
 	state       int
 }
 
@@ -84,11 +88,27 @@ func requestLineFromString(str string) (*RequestLine, error) {
 }
 
 func (r *Request) parse(data []byte) (int, error) {
+	totalBytesParsed := 0
+
+	for r.state != StateDone {
+		n, err := r.parseSingle(data[totalBytesParsed:])
+		if err != nil {
+			return totalBytesParsed, err
+		}
+
+		if n == 0 {
+			break
+		}
+
+		totalBytesParsed += n
+	}
+	return totalBytesParsed, nil
+}
+
+func (r *Request) parseSingle(data []byte) (int, error) {
 	switch r.state {
 	case StateInitialized:
-
 		requestLine, bytesConsumed, err := parseRequestLine(data)
-
 		if err != nil {
 			return 0, err
 		}
@@ -98,8 +118,33 @@ func (r *Request) parse(data []byte) (int, error) {
 		}
 
 		r.RequestLine = *requestLine
-		r.state = StateDone
+		r.state = StateParsingHeaders
+
+		if r.Headers == nil {
+			r.Headers = h.NewHeaders()
+		}
+
 		return bytesConsumed, nil
+
+	case StateParsingHeaders:
+		if r.Headers == nil {
+			r.Headers = h.NewHeaders()
+		}
+
+		n, done, err := r.Headers.Parse(data)
+		if err != nil {
+			return 0, err
+		}
+
+		if n == 0 {
+			return 0, nil
+		}
+
+		if done {
+			r.state = StateDone
+		}
+
+		return n, nil
 
 	case StateDone:
 		return 0, fmt.Errorf("error: trying to read data in a done state")
@@ -141,6 +186,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 				if bytesConsumed == 0 {
 					return nil, fmt.Errorf("unexpected EOF: incomplete request")
 				}
+
 			}
 			break
 		} else if err != nil {
@@ -158,6 +204,10 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 			copy(buf, buf[bytesConsumed:readToIndex])
 			readToIndex = remaining
 		}
+	}
+
+	if request.state != StateDone {
+		return nil, fmt.Errorf("unexpected EOF: incomplete request")
 	}
 
 	return request, nil
