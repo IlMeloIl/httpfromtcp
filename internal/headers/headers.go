@@ -17,7 +17,6 @@ func NewHeaders() Headers {
 }
 
 func (h Headers) Parse(data []byte) (n int, done bool, err error) {
-
 	idx := bytes.Index(data, []byte(crlf))
 
 	if idx == -1 {
@@ -57,7 +56,6 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 	}
 
 	return idx + len(crlf), false, nil
-
 }
 
 func validateHeaderKey(key string) bool {
@@ -66,9 +64,18 @@ func validateHeaderKey(key string) bool {
 		isDigit := (char >= '0' && char <= '9')
 		isSpecial := strings.ContainsRune("!#$%&'*+-.^_`|~", char)
 
-		if !(isAlpha || isDigit || isSpecial) {
+		if !isAlpha && !isDigit && !isSpecial {
 			return false
 		}
 	}
 	return true
+}
+
+func (h Headers) Get(key string) string {
+	value, ok := h[key]
+	if !ok {
+		return ""
+	}
+
+	return value
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	h "httpfromtcp/internal/headers"
@@ -12,12 +13,14 @@ import (
 const (
 	StateInitialized = iota
 	StateParsingHeaders
+	StateParsingBody
 	StateDone
 )
 
 type Request struct {
 	RequestLine RequestLine
 	Headers     h.Headers
+	Body        []byte
 	state       int
 }
 
@@ -33,7 +36,6 @@ const (
 )
 
 func parseRequestLine(data []byte) (*RequestLine, int, error) {
-
 	idx := bytes.Index(data, []byte(crlf))
 
 	if idx == -1 {
@@ -141,10 +143,47 @@ func (r *Request) parseSingle(data []byte) (int, error) {
 		}
 
 		if done {
-			r.state = StateDone
+			r.state = StateParsingBody
 		}
 
 		return n, nil
+
+	case StateParsingBody:
+		if r.Headers == nil {
+			return 0, nil
+		}
+
+		contentLengthStr := r.Headers.Get("content-length")
+		if contentLengthStr == "" {
+			r.state = StateDone
+			return 0, nil
+		}
+
+		contentLength, err := strconv.Atoi(contentLengthStr)
+		if err != nil {
+			return 0, fmt.Errorf("error converting contentLengthStr to integer: %w", err)
+		}
+
+		if contentLength == 0 {
+			r.state = StateDone
+			return 0, nil
+		}
+
+		if r.Body == nil {
+			r.Body = make([]byte, 0, contentLength)
+		}
+
+		bytesToConsume := len(data)
+		if len(r.Body)+bytesToConsume > contentLength {
+			bytesToConsume = contentLength - len(r.Body)
+		}
+
+		r.Body = append(r.Body, data[:bytesToConsume]...)
+
+		if len(r.Body) == contentLength {
+			r.state = StateDone
+		}
+		return bytesToConsume, nil
 
 	case StateDone:
 		return 0, fmt.Errorf("error: trying to read data in a done state")
@@ -155,7 +194,6 @@ func (r *Request) parseSingle(data []byte) (int, error) {
 }
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
-
 	buf := make([]byte, bufferSize)
 	readToIndex := 0
 
@@ -184,9 +222,18 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 				}
 
 				if bytesConsumed == 0 {
-					return nil, fmt.Errorf("unexpected EOF: incomplete request")
+					if request.state == StateParsingBody {
+						contentLengthStr := request.Headers.Get("content-length")
+						if contentLengthStr != "" {
+							contentLength, _ := strconv.Atoi(contentLengthStr)
+							if contentLength > 0 && len(request.Body) < contentLength {
+								return nil, fmt.Errorf("unexpected EOF: incomplete request")
+							}
+						}
+					} else {
+						return nil, fmt.Errorf("unexpected EOF: incomplete request")
+					}
 				}
-
 			}
 			break
 		} else if err != nil {
@@ -199,7 +246,6 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		}
 
 		if bytesConsumed > 0 {
-
 			remaining := readToIndex - bytesConsumed
 			copy(buf, buf[bytesConsumed:readToIndex])
 			readToIndex = remaining
