@@ -160,6 +160,23 @@ func main() {
 			w.WriteHeaders(h)
 			w.WriteBody([]byte(internalErrorHTML))
 
+		case "/video":
+			videoData, err := os.ReadFile("../../assets/vim.mp4")
+			if err != nil {
+				w.WriteStatusLine(response.StatusInternalServerError)
+				h.Set("content-type", "text/html")
+				h.Set("content-length", fmt.Sprintf("%d", len(internalErrorHTML)))
+				w.WriteHeaders(h)
+				w.WriteBody([]byte(internalErrorHTML))
+				return
+			}
+
+			w.WriteStatusLine(response.StatusOK)
+			h.Set("content-type", "video/mp4")
+			h.Set("content-length", fmt.Sprintf("%d", len(videoData)))
+			w.WriteHeaders(h)
+			w.WriteBody(videoData)
+
 		default:
 			w.WriteStatusLine(response.StatusOK)
 
