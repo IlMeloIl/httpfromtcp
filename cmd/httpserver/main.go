@@ -1,12 +1,18 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"httpfromtcp/internal/headers"
 	"httpfromtcp/internal/request"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	response "httpfromtcp/internal/respose"
@@ -14,6 +20,71 @@ import (
 )
 
 const port = (42069)
+
+func proxyHandler(w *response.Writer, targetPath string) error {
+	targetUrl := "https://httpbin.org" + targetPath
+
+	resp, err := http.Get(targetUrl)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	w.WriteStatusLine(response.StatusCode(resp.StatusCode))
+
+	h := headers.NewHeaders()
+
+	for key, values := range resp.Header {
+		if strings.ToLower(key) != "content-length" {
+			h.Set(key, strings.Join(values, ","))
+		}
+	}
+
+	h.Set("transfer-encoding", "chunked")
+
+	h.Set("trailer", "X-Content-SHA256, X-Content-Length")
+
+	err = w.WriteHeaders(h)
+	if err != nil {
+		return err
+	}
+
+	var fullResponseBody bytes.Buffer
+
+	buffer := make([]byte, 1024)
+	for {
+		n, err := resp.Body.Read(buffer)
+		if n > 0 {
+
+			fullResponseBody.Write(buffer[:n])
+
+			_, err := w.WriteChunkedBody(buffer[:n])
+			if err != nil {
+				return err
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+	}
+	_, err = w.WriteChunkedBodyDone()
+	if err != nil {
+		return err
+	}
+
+	rawBody := fullResponseBody.Bytes()
+	bodyHash := sha256.Sum256(rawBody)
+	hashHex := hex.EncodeToString(bodyHash[:])
+
+	trailers := headers.NewHeaders()
+	trailers.Set("X-Content-SHA256", hashHex)
+	trailers.Set("X-Content-Length", fmt.Sprintf("%d", fullResponseBody.Len()))
+
+	return w.WriteTrailers(trailers)
+}
 
 func main() {
 	badRequestHTML := `<html>
@@ -47,6 +118,29 @@ func main() {
 </html>`
 
 	handler := func(w *response.Writer, req *request.Request) {
+		if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin") {
+			targetPath := strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin")
+			if targetPath == "" {
+				targetPath = "/"
+			}
+
+			err := proxyHandler(w, targetPath)
+			if err != nil {
+				log.Printf("Error proxying request: %v", err)
+
+				if w.IsInitialized() {
+					w.WriteStatusLine(response.StatusInternalServerError)
+					h := headers.NewHeaders()
+					h.Set("content-type", "text/html")
+					h.Set("content-length", fmt.Sprintf("%d", len(internalErrorHTML)))
+					w.WriteHeaders(h)
+					w.WriteBody([]byte(internalErrorHTML))
+
+				}
+			}
+			return
+		}
+
 		h := headers.NewHeaders()
 		h.Set("content-type", "text/html")
 		h.Set("connection", "close")
@@ -65,6 +159,7 @@ func main() {
 			h.Set("content-length", fmt.Sprintf("%d", len(internalErrorHTML)))
 			w.WriteHeaders(h)
 			w.WriteBody([]byte(internalErrorHTML))
+
 		default:
 			w.WriteStatusLine(response.StatusOK)
 

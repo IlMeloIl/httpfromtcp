@@ -12,7 +12,9 @@ const (
 	StateInitialized WriterState = iota
 	StateStatusWritten
 	StateHeadersWritten
-	StateBodyWriten
+	StateBodyWritten
+	StateChunkedBodyWriting
+	StateTrailersWritten
 )
 
 type StatusCode int
@@ -99,6 +101,70 @@ func (w *Writer) WriteBody(p []byte) (int, error) {
 		return 0, err
 	}
 
-	w.state = StateBodyWriten
+	w.state = StateBodyWritten
 	return n, nil
+}
+
+func (w *Writer) WriteChunkedBody(p []byte) (int, error) {
+	if w.state != StateHeadersWritten && w.state != StateChunkedBodyWriting {
+		return 0, fmt.Errorf("headers not written or non-chunked body already written")
+	}
+
+	w.state = StateChunkedBodyWriting
+
+	chunkSizeHex := fmt.Sprintf("%x\r\n", len(p))
+	_, err := w.w.Write([]byte(chunkSizeHex))
+	if err != nil {
+		return 0, err
+	}
+
+	n, err := w.w.Write(p)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = w.w.Write([]byte("\r\n"))
+	if err != nil {
+		return 0, err
+	}
+
+	return n, nil
+}
+
+func (w *Writer) WriteChunkedBodyDone() (int, error) {
+	if w.state != StateChunkedBodyWriting {
+		return 0, fmt.Errorf("not in chunked body writing state")
+	}
+
+	_, err := w.w.Write([]byte("0\r\n"))
+	if err != nil {
+		return 0, err
+	}
+
+	w.state = StateBodyWritten
+	return 0, nil
+}
+
+func (w *Writer) IsInitialized() bool {
+	return w.state == StateInitialized
+}
+
+func (w *Writer) WriteTrailers(h headers.Headers) error {
+	if w.state != StateBodyWritten {
+		return fmt.Errorf("trailers can only be written after a chunked body is complete")
+	}
+
+	for k, v := range h {
+		trailerLine := fmt.Sprintf("%s: %s\r\n", k, v)
+		_, err := w.w.Write([]byte(trailerLine))
+		if err != nil {
+			return err
+		}
+	}
+
+	_, err := w.w.Write([]byte("\r\n"))
+	if err != nil {
+		return err
+	}
+	return nil
 }
